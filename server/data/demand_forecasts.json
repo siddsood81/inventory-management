@@ -1,8 +1,8 @@
 [
   {
     "id": "1",
-    "item_sku": "WDG-001",
-    "item_name": "Industrial Widget Type A",
+    "item_sku": "TMP-201",
+    "item_name": "Temperature Sensor Module",
     "current_demand": 300,
     "forecasted_demand": 450,
     "trend": "increasing",
@@ -19,10 +19,10 @@
   },
   {
     "id": "3",
-    "item_sku": "GSK-203",
-    "item_name": "High-Temperature Gasket",
+    "item_sku": "SRV-301",
+    "item_name": "Micro Servo Motor",
     "current_demand": 500,
-    "forecasted_demand": 600,
+    "forecasted_demand": 620,
     "trend": "increasing",
     "period": "Next 30 days"
   },
@@ -37,10 +37,10 @@
   },
   {
     "id": "5",
-    "item_sku": "FLT-405",
-    "item_name": "Oil Filter Cartridge",
+    "item_sku": "PSU-508",
+    "item_name": "Battery Backup Power Supply",
     "current_demand": 800,
-    "forecasted_demand": 950,
+    "forecasted_demand": 980,
     "trend": "increasing",
     "period": "Next 30 days"
   },
