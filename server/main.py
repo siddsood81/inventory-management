@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel
 from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
+import uuid
+from datetime import datetime, timedelta
 
 app = FastAPI(title="Factory Inventory Management System")
 
@@ -119,6 +121,44 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class RestockingRecommendation(BaseModel):
+    sku: str
+    name: str
+    category: str
+    warehouse: str
+    current_stock: int
+    reorder_point: int
+    restock_quantity: int
+    unit_cost: float
+    estimated_cost: float
+    current_demand: Optional[int] = None
+    forecasted_demand: Optional[int] = None
+    trend: str = 'stable'
+    # 'high' when item has increasing demand AND is below reorder point
+    priority: str = 'normal'
+
+class RestockingOrderItem(BaseModel):
+    sku: str
+    name: str
+    quantity: int
+    unit_cost: float
+
+class CreateRestockingOrderRequest(BaseModel):
+    items: List[RestockingOrderItem]
+    warehouse: Optional[str] = 'San Francisco'
+
+class Task(BaseModel):
+    id: str
+    title: str
+    status: str  # 'pending' | 'completed'
+    created_at: str
+
+class CreateTaskRequest(BaseModel):
+    title: str
+
+# In-memory task store
+tasks_store: List[dict] = []
 
 # API endpoints
 @app.get("/")
@@ -303,6 +343,128 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+@app.get("/api/restocking/recommendations", response_model=List[RestockingRecommendation])
+def get_restocking_recommendations():
+    """Return low-stock items, prioritising those with an increasing demand forecast.
+
+    Items are sorted so that (1) increasing-demand items come first, then
+    (2) most-urgent by stock-to-reorder-point ratio within each group.
+    """
+    # Build a quick SKU lookup for 'increasing' demand forecasts
+    increasing_by_sku = {
+        f['item_sku']: f
+        for f in demand_forecasts
+        if f['trend'] == 'increasing'
+    }
+
+    results = []
+    for item in inventory_items:
+        if item['quantity_on_hand'] >= item['reorder_point']:
+            continue  # adequate stock, no restock needed
+
+        forecast = increasing_by_sku.get(item['sku'])
+        restock_qty = item['reorder_point'] - item['quantity_on_hand']
+
+        results.append({
+            'sku': item['sku'],
+            'name': item['name'],
+            'category': item['category'],
+            'warehouse': item['warehouse'],
+            'current_stock': item['quantity_on_hand'],
+            'reorder_point': item['reorder_point'],
+            'restock_quantity': restock_qty,
+            'unit_cost': item['unit_cost'],
+            'estimated_cost': round(restock_qty * item['unit_cost'], 2),
+            'current_demand': forecast['current_demand'] if forecast else None,
+            'forecasted_demand': forecast['forecasted_demand'] if forecast else None,
+            'trend': forecast['trend'] if forecast else 'stable',
+            # Mark as high priority only when both conditions are met
+            'priority': 'high' if forecast else 'normal',
+        })
+
+    # Sort: increasing-demand items first, then by urgency (lowest stock ratio)
+    results.sort(key=lambda x: (
+        0 if x['trend'] == 'increasing' else 1,
+        x['current_stock'] / x['reorder_point'],
+    ))
+    return results
+
+
+@app.post("/api/restocking/orders", response_model=Order)
+def create_restocking_order(request: CreateRestockingOrderRequest):
+    """Create a restocking order and append it to the in-memory orders list.
+
+    The order appears immediately in GET /api/orders because `orders` is a
+    shared mutable list — no restart required.
+    """
+    now = datetime.now()
+    # 7-day fixed lead time per business requirement
+    expected_delivery = now + timedelta(days=7)
+
+    order_items = [
+        {
+            'sku': item.sku,
+            'name': item.name,
+            'quantity': item.quantity,
+            'unit_price': item.unit_cost,
+        }
+        for item in request.items
+    ]
+
+    total_value = round(
+        sum(item.quantity * item.unit_cost for item in request.items), 2
+    )
+
+    new_order = {
+        'id': str(uuid.uuid4())[:8],
+        'order_number': f"RST-{uuid.uuid4().hex[:4].upper()}",
+        'customer': 'Internal Restocking',
+        'items': order_items,
+        'status': 'Submitted',
+        'order_date': now.strftime('%Y-%m-%dT%H:%M:%S'),
+        'expected_delivery': expected_delivery.strftime('%Y-%m-%dT%H:%M:%S'),
+        'total_value': total_value,
+        'actual_delivery': None,
+        'warehouse': request.warehouse,
+        'category': 'Restocking',
+    }
+
+    orders.append(new_order)
+    return new_order
+
+
+@app.get("/api/tasks", response_model=List[Task])
+def get_tasks():
+    return tasks_store
+
+@app.post("/api/tasks", response_model=Task, status_code=201)
+def create_task(request: CreateTaskRequest):
+    task = {
+        "id": str(uuid.uuid4())[:8],
+        "title": request.title,
+        "status": "pending",
+        "created_at": datetime.now().isoformat(),
+    }
+    tasks_store.append(task)
+    return task
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: str):
+    task = next((t for t in tasks_store if t["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    tasks_store.remove(task)
+    return {"deleted": task_id}
+
+@app.patch("/api/tasks/{task_id}", response_model=Task)
+def toggle_task(task_id: str):
+    task = next((t for t in tasks_store if t["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task["status"] = "completed" if task["status"] == "pending" else "pending"
+    return task
+
 
 if __name__ == "__main__":
     import uvicorn
